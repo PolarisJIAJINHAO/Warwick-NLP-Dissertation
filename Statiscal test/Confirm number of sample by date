@@ -1,0 +1,56 @@
+import pandas as pd
+
+
+def count_samples_within_window(file_path, date_column, selected_date, window_days=14):
+    """
+    Counts the number of samples in the file within a window of ±window_days around selected_date.
+
+    Parameters:
+    - file_path (str): Path to your CSV file.
+    - date_column (str): Name of the column containing timestamps/dates.
+    - selected_date (str or datetime): The central date (e.g., '2025-07-01').
+    - window_days (int): Number of days before and after the selected_date to include.
+
+    Returns:
+    - dict: Counts of samples before, on, and after the selected_date within the window.
+    """
+    # Load data, parse the date column
+    df = pd.read_csv(file_path,
+                     encoding='cp1252',
+                     engine='python',
+                     on_bad_lines='warn',
+                     encoding_errors='replace',
+                     parse_dates=[date_column])
+
+    # Ensure selected_date is a Timestamp
+    selected_ts = pd.to_datetime(selected_date)
+
+    # Define window
+    start = selected_ts - pd.Timedelta(days=window_days)
+    end = selected_ts + pd.Timedelta(days=window_days)
+
+    # Filter within the window
+    df_window = df[(df[date_column] >= start) & (df[date_column] <= end)]
+
+    # Counts
+    count_before = df_window[df_window[date_column] < selected_ts].shape[0]
+    count_on = df_window[df_window[date_column] == selected_ts].shape[0]
+    count_after = df_window[df_window[date_column] > selected_ts].shape[0]
+
+    return {
+        'total_within_window': df_window.shape[0],
+        'before_selected_date': count_before,
+        'on_selected_date': count_on,
+        'after_selected_date': count_after
+    }
+
+
+# Input Information here
+if __name__ == "__main__":
+    results = count_samples_within_window(
+        file_path='reddit_sentiment_score.csv',  
+        date_column='comment_time',  
+        selected_date='2024/11/2',  
+        window_days=3  
+    )
+    print("Sample counts around selected date:", results)
