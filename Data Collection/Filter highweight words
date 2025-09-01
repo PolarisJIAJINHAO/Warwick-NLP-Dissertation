@@ -1,0 +1,28 @@
+import pandas as pd
+
+
+df = pd.read_csv("tfidf_results.csv", encoding="utf-8-sig")
+
+# if there is metadata, such as comment_time、title, delete them first
+for meta in ("comment_time", "title"):
+    if meta in df.columns:
+        df = df.drop(columns=[meta])
+
+
+records = []
+for idx, row in df.iterrows():
+    # select top 30 words
+    top20 = row.nlargest(30)
+    for term, score in top20.items():
+        if score > 0:
+            records.append({
+                "comment_index": idx,
+                "term": term,
+                "tfidf_score": score
+            })
+
+
+result_df = pd.DataFrame.from_records(records)
+result_df.to_csv("tfidf_top30_per_comment.csv", index=False, encoding="utf-8-sig")
+
+print(f"There are {df.shape[0]} comment(s) that have been processed.Each comment has extracted a maximum of 20 non-zero TF-IDF words, resulting in a total of {len(result_df)} row of results, which have been saved as  tfidf_top30_per_comment.csv")
