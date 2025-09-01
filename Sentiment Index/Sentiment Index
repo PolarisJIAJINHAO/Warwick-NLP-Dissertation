@@ -1,0 +1,187 @@
+from pathlib import Path
+import re
+import numpy as np
+import pandas as pd
+
+
+INPUT_DIR   = Path(r"D:\Reddit Project Code\Determine Event\topic_keyword_matches")
+OUTPUT_CSV  = "V5topic_monthly_abs_metrics_2012_2025_version3.csv"
+TOPIC_MIN, TOPIC_MAX = 0, 52   
+TIME_COL    = "comment_time"
+SENT_COL    = "sentiment_score"
+VOTE_CANDIDATES = ["upvotes", "votes", "score"]
+YEAR_START, YEAR_END = 2012, 2025   
+
+
+def pick_votes_column(df: pd.DataFrame) -> str:
+    for c in VOTE_CANDIDATES:
+        if c in df.columns:
+            return c
+    df["upvotes"] = 0
+    return "upvotes"
+
+def parse_topic_id_from_filename(p: Path) -> int | None:
+
+    m = re.search(r"topic_(-?\d+)_comments\.csv$", p.name, flags=re.IGNORECASE)
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            return None
+    return None
+
+def discover_topic_files(input_dir: Path) -> dict[int, Path]:
+
+    out: dict[int, Path] = {}
+    for p in input_dir.glob("topic_*_comments.csv"):
+        tid = parse_topic_id_from_filename(p)
+        if tid is not None and tid not in out:
+            out[tid] = p
+    return out
+
+def load_topic_monthly_from_file(path: Path, forced_topic_id: int | None = None) -> pd.DataFrame:
+    if not path.exists():
+        return empty_monthly_df(forced_topic_id if forced_topic_id is not None else -1)
+
+    df = pd.read_csv(path, encoding="cp1252", engine="python", on_bad_lines="warn", encoding_errors="replace")
+
+
+    if "topic_id" in df.columns:
+        try:
+            topic_id = int(pd.to_numeric(df["topic_id"], errors="coerce").dropna().iloc[0])
+        except Exception:
+            topic_id = forced_topic_id if forced_topic_id is not None else -1
+    else:
+        topic_id = forced_topic_id if forced_topic_id is not None else -1
+
+    if TIME_COL not in df.columns or SENT_COL not in df.columns:
+        print(f"[Topic {topic_id}] lack（{TIME_COL}/{SENT_COL}）, pass：{path.name}")
+        return empty_monthly_df(topic_id)
+
+    df[TIME_COL] = pd.to_datetime(df[TIME_COL], errors="coerce")
+    df[SENT_COL] = pd.to_numeric(df[SENT_COL], errors="coerce")
+    vote_col = pick_votes_column(df)
+    df[vote_col] = pd.to_numeric(df[vote_col], errors="coerce").fillna(0).clip(lower=0)
+
+    df = df.dropna(subset=[TIME_COL, SENT_COL])
+    df = df[(df[TIME_COL].dt.year >= YEAR_START) & (df[TIME_COL].dt.year <= YEAR_END)]
+
+
+    df["abs_s"]    = df[SENT_COL].abs()
+    df["w_log"]    = np.log1p(df[vote_col])
+    df["linear_w"] = 1 + df[vote_col]
+    df["_wlog_abs"] = df["w_log"]    * df["abs_s"]
+    df["_wlin_abs"] = df["linear_w"] * df["abs_s"]
+
+    df["year"]  = df[TIME_COL].dt.year
+    df["month"] = df[TIME_COL].dt.month
+
+
+    agg = (
+        df.groupby(["year","month"])
+          .agg(
+              sum_weights=("w_log","sum"),        # Σ log(1+u_i)
+              sum_linear_w=("linear_w","sum"),    # Σ (1+u_i)
+              sum_votes=(vote_col,"sum"),         # Σ u_i
+              ws_abs=("_wlog_abs","sum"),         # Σ [log(1+u_i) * |s_i|]
+              sum_sentiment_score=("_wlin_abs","sum"),  # Σ [(1+u_i) * |s_i|]
+              sum_abs=("abs_s","sum"),            # NEW: Σ |s_i|（去权重）
+              n_comments=("abs_s","size")
+          )
+          .reset_index()
+    )
+
+    # == 指标 ==
+
+    agg["weighted_abs_sentiment"] = np.where(agg["sum_weights"] > 0,
+                                             agg["ws_abs"] / agg["sum_weights"], np.nan)
+
+    agg["per_comment_intensity"]  = np.where(agg["n_comments"]  > 0,
+                                             agg["sum_sentiment_score"] / agg["n_comments"], np.nan)
+
+    agg["avg_abs_per_exposure"]   = np.where(agg["sum_linear_w"]> 0,
+                                             agg["sum_sentiment_score"] / agg["sum_linear_w"], np.nan)
+
+    agg["per_comment_intensity_unweighted"] = np.where(agg["n_comments"] > 0,
+                                                       agg["sum_abs"] / agg["n_comments"], np.nan)
+
+    # ===== original sentiment_index （Keep for comparison）=====
+    agg["sentiment_index"] = (
+        0.33 * agg["sum_votes"] +
+        0.33 * agg["avg_abs_per_exposure"] +
+        0.33 * agg["per_comment_intensity"]
+    )
+
+    # =====  sentiment_index_v2  =====
+    #np.log1p(agg["sum_votes"]) is ln(1+upvotes)
+    #agg["avg_abs_per_exposure"] is MASS
+    #agg["per_comment_intensity_unweighted"] is CI
+    agg["sentiment_index_v2"] = (
+        0.33 * np.log1p(agg["sum_votes"]) +
+        0.33 * agg["avg_abs_per_exposure"] +
+        0.33 * agg["per_comment_intensity_unweighted"]
+    )
+
+
+    full_idx = pd.MultiIndex.from_product([range(YEAR_START, YEAR_END+1), range(1,13)], names=["year","month"])
+    agg = agg.set_index(["year","month"]).reindex(full_idx).reset_index()
+
+
+    agg.insert(0, "topic_id", topic_id)
+    cols = [
+        "topic_id","year","month",
+        "weighted_abs_sentiment",
+        "sum_sentiment_score","sum_abs",
+        "per_comment_intensity","per_comment_intensity_unweighted",
+        "avg_abs_per_exposure",
+        "n_comments","sum_weights","sum_linear_w","sum_votes",
+        "sentiment_index","sentiment_index_v2"
+    ]
+    return agg[cols]
+
+def empty_monthly_df(topic_id: int) -> pd.DataFrame:
+    cols = [
+        "topic_id","year","month",
+        "weighted_abs_sentiment",
+        "sum_sentiment_score","sum_abs",
+        "per_comment_intensity","per_comment_intensity_unweighted",
+        "avg_abs_per_exposure",
+        "n_comments","sum_weights","sum_linear_w","sum_votes",
+        "sentiment_index","sentiment_index_v2"
+    ]
+    df = pd.DataFrame(columns=cols)
+    df["topic_id"] = topic_id
+    return df
+
+
+def load_topic_monthly_by_id(topic_id: int) -> pd.DataFrame:
+
+    return load_topic_monthly_from_file(INPUT_DIR / f"topic_{topic_id}_comments.csv", forced_topic_id=topic_id)
+
+
+def main():
+    files_map = discover_topic_files(INPUT_DIR)
+
+    all_rows = []
+    if files_map:
+        for tid in sorted(files_map.keys()):
+            out_k = load_topic_monthly_from_file(files_map[tid], forced_topic_id=tid)
+            if not out_k.empty:
+                all_rows.append(out_k)
+    else:
+        for k in range(TOPIC_MIN, TOPIC_MAX+1):
+            out_k = load_topic_monthly_by_id(k)
+            if not out_k.empty:
+                all_rows.append(out_k)
+
+    if not all_rows:
+        print("No data")
+        return
+
+    out = pd.concat(all_rows, ignore_index=True)
+    out.to_csv(OUTPUT_CSV, index=False)
+    print(f"finish：{OUTPUT_CSV}")
+    print(out.head(10))
+
+if __name__ == "__main__":
+    main()
