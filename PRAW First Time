@@ -1,0 +1,51 @@
+import praw
+import time
+import logging
+import csv
+
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s: %(message)s")
+
+#Here type your own Reddit API secret, this is mine:
+reddit = praw.Reddit(
+    client_id="XbvfN1vLbTOTQ3AsbgHPzQ",
+    client_secret="5_LBwSwDcWY9eGIUlpciWxWQq5RlfA",
+    user_agent="python:com.University_of_Warwick.loldata:v1.0 (by /u/Tough_Base4547)"
+)
+print("Reddit Login Successfully")
+subreddit = reddit.subreddit("leagueoflegends")
+print("locate successfully")
+
+def throttle_if_needed():
+    limits = reddit.auth.limits
+    rem = limits.get("remaining", 0)
+    reset_ts = limits.get("reset_timestamp", 0)
+    if rem < 5:
+        wait = max(int(reset_ts - time.time()) + 5, 0)
+        logging.warning(f"Rate low ({rem}), sleeping {wait}s")
+        time.sleep(wait)
+
+rows = []
+for submission in subreddit.new(limit=100):
+    title = submission.title
+    print(title)
+    throttle_if_needed()
+    submission.comments.replace_more(limit=None)
+    for comment in submission.comments.list():
+        if comment.body.strip().lower() == "[deleted]":
+            continue
+        rows.append({
+            "title": title,
+            "comment": comment.body,
+            "comment_time": time.strftime(
+                '%Y-%m-%d %H:%M:%S',
+                time.gmtime(comment.created_utc)
+            )
+        })
+
+with open("comments.csv", "w", newline="", encoding="utf-8-sig") as f:
+    writer = csv.DictWriter(f, fieldnames=["title", "comment", "comment_time"])
+    writer.writeheader()
+    writer.writerows(rows)
+
+logging.info(f"collect {len(rows)} comment, save in comments.csv")
