@@ -1,0 +1,68 @@
+import pandas as pd
+from scipy import stats
+import matplotlib.pyplot as plt
+import seaborn as sns  # only use to Visualisation
+
+
+def test_normality_by_time(csv_path,
+                           time_col='comment_time',
+                           score_col='sentiment_score',
+                           threshold='2025/4/15',
+                           n_per_group_before=298,
+                           n_per_group_after=259,
+                           date_format=None):
+    df = pd.read_csv(csv_path,
+                     encoding='cp1252',
+                     engine='python',
+                     on_bad_lines='warn',
+                     encoding_errors='replace',)
+
+
+    df[time_col] = pd.to_datetime(df[time_col], format=date_format)
+
+
+    before = (
+        df[df[time_col] < threshold]
+        .sort_values(time_col, ascending=False)
+        .head(n_per_group_before)
+    )
+    after = (
+        df[df[time_col] >= threshold]
+        .sort_values(time_col, ascending=True)
+        .head(n_per_group_after)
+    )
+
+
+    scores_before = before[score_col].dropna()
+    scores_after = after[score_col].dropna()
+
+
+    stat_b, p_b = stats.shapiro(scores_before)
+    stat_a, p_a = stats.shapiro(scores_after)
+    print(f"=== Before ({len(scores_before)} samples) ===")
+    print(f"Shapiro W={stat_b:.4f}, p-value={p_b:.4e}")
+    print()
+    print(f"=== After  ({len(scores_after)} samples) ===")
+    print(f"Shapiro W={stat_a:.4f}, p-value={p_a:.4e}")
+
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+    stats.probplot(scores_before, dist="norm", plot=axes[0])
+    axes[0].set_title('Q–Q Plot (Before)')
+    stats.probplot(scores_after, dist="norm", plot=axes[1])
+    axes[1].set_title('Q–Q Plot (After)')
+    plt.tight_layout()
+    plt.show()
+
+# Input information here
+if __name__ == "__main__":
+
+    test_normality_by_time(
+        csv_path='reddit_sentiment_score.csv',
+        time_col='comment_time',
+        score_col='sentiment_score',
+        threshold='2018/12/5',  
+        n_per_group_before=33,
+        n_per_group_after=149,
+        date_format=None  
+    )
