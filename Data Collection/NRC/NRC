@@ -1,0 +1,42 @@
+import pandas as pd
+import nltk
+from collections import Counter
+import spacy
+
+nltk.download('punkt')
+nlp = spacy.load("en_core_web_sm")
+# Download NRC
+nrc = pd.read_csv("NRC-Emotion-Lexicon-Wordlevel-v0.92.txt",
+                  sep='\t',
+                  names=['word', 'emotion', 'association'])
+nrc = nrc[nrc['association'] == 1].pivot(index='word', columns='emotion', values='association').fillna(0)
+
+#Use topic 23 as an example.
+df = pd.read_csv("topic_23_comments.csv")
+
+# If need lemmatization, use this code. Otherwise use clean_comment column
+def lemmatize_text(text):
+    doc = nlp(text)
+    return " ".join([token.lemma_ for token in doc])
+
+df["clean_comment"] = df["clean_comment"].apply(lemmatize_text)
+
+
+def get_emotions(text):
+    words = nltk.word_tokenize(text.lower())
+    emotion_counts = Counter()
+    for w in words:
+        if w in nrc.index:
+            emotion_counts.update(nrc.loc[w][nrc.loc[w] == 1].index.tolist())
+    return pd.Series(emotion_counts)
+
+emotion_df = df["clean_comment"].apply(get_emotions).fillna(0)
+
+
+df = pd.concat([df, emotion_df], axis=1)
+
+
+topic_emotions = df[emotion_df.columns].sum().sort_values(ascending=False)
+
+print(topic_emotions)
+df.to_csv("NRC_topic_23_emotions.csv", index=False)
