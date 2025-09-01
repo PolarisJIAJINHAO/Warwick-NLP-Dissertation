@@ -1,0 +1,174 @@
+import os
+import re
+import ast
+import pandas as pd
+
+
+TOPIC_INFO_PATH = "topic_rank_top30.csv"   
+COMMENTS_BASENAME = "reddit_sentiment_score"      
+COMMENTS_COL = "clean_comment"                    
+OUTPUT_DIR = "topic_keyword_matches"             
+EXCLUDE_TOPICS = {14, 4, 18, 66, 27}                 
+
+
+STOPWORDS = {
+    "see","sees","seeing","saw","seen","look","looks","looking","looked",
+    "thing","things","stuff","someone","something","anyone","anything",
+    "very","really","just","also","much","many","lot","lots",
+    "month","stop","feel","day","ago","name","rule","stop","true","relevant","obvious","understand","genuinely","last",
+    "notice","show","plat","probably","tell","bad","right"
+}
+
+
+MIN_TERM_LEN = 2
+
+
+
+def read_topic_keywords(path: str, exclude_topics: set, stopwords: set, min_len: int = 2) -> dict[int, list[str]]:
+
+    df = pd.read_csv(path)
+    if "Topic" not in df.columns or "Representation" not in df.columns:
+        raise ValueError("The document must include the columns 'Topic' and 'Representation'.")
+
+
+    df = df[~df["Topic"].isin(exclude_topics)].copy()
+    out = {}
+
+    for _, row in df.iterrows():
+        topic_id = int(row["Topic"])
+        raw = row["Representation"]
+
+        if pd.isna(raw):
+            terms = []
+        else:
+            try:
+                parsed = ast.literal_eval(raw)
+                if not isinstance(parsed, (list, tuple)):
+                    parsed = []
+            except Exception:
+                cleaned = str(raw).strip().strip("[]")
+                parsed = [t.strip().strip("'").strip('"') for t in cleaned.split(",") if t.strip()]
+
+            seen = set()
+            terms = []
+            for t in parsed:
+                t_norm = str(t).strip().lower()
+                if not t_norm:
+                    continue
+                if len(t_norm) < min_len:
+                    continue
+                if t_norm in stopwords:
+                    continue
+                if t_norm not in seen:
+                    seen.add(t_norm)
+                    terms.append(t_norm)
+
+        out[topic_id] = terms
+
+    return out
+
+
+def compile_term_patterns(terms: list[str]) -> list[tuple[str, re.Pattern]]:
+    patterns = []
+    for term in terms:
+        pat = r"\b" + re.escape(term) + r"\b"
+        patterns.append((term, re.compile(pat, flags=re.IGNORECASE)))
+    return patterns
+
+
+def which_terms_match(text: str, term_patterns: list[tuple[str, re.Pattern]]) -> list[str]:
+    if not isinstance(text, str):
+        return []
+    hits = []
+    for term, pat in term_patterns:
+        if pat.search(text):
+            hits.append(term)
+    return hits
+
+
+def try_read_comments(basename: str) -> pd.DataFrame:
+    for candidate in (basename + ".csv", basename):
+        if os.path.exists(candidate):
+            try:
+                df = pd.read_csv(
+                    candidate,
+                    encoding="cp1252",
+                    engine="python",
+                    on_bad_lines="warn",
+                    encoding_errors="replace"
+                )
+                return df
+            except Exception:
+                pass
+    return pd.read_csv(
+        basename + ".csv",
+        encoding="cp1252",
+        engine="python",
+        on_bad_lines="warn",
+        encoding_errors="replace"
+    )
+
+
+
+def main():
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+
+    topic_terms = read_topic_keywords(
+        TOPIC_INFO_PATH,
+        exclude_topics=EXCLUDE_TOPICS,
+        stopwords=STOPWORDS,
+        min_len=MIN_TERM_LEN
+    )
+
+
+    comments = try_read_comments(COMMENTS_BASENAME)
+    if COMMENTS_COL not in comments.columns:
+        raise ValueError(f"The comment file is missing the column: {COMMENTS_COL}")
+
+    comments = comments.copy()
+    comments[COMMENTS_COL] = comments[COMMENTS_COL].astype(str).str.lower()
+
+
+    id_col = None
+    for possible_id in ["comment_id", "id", "commentId"]:
+        if possible_id in comments.columns:
+            id_col = possible_id
+            break
+
+    seen_comments = set()
+
+
+    summary_rows = []
+    for topic_id, terms in topic_terms.items():
+        if not terms:
+            print(f"[Topic {topic_id}] No available keywords → Skip")
+            continue
+
+        term_patterns = compile_term_patterns(terms)
+
+        matched_terms = comments[COMMENTS_COL].apply(lambda x: which_terms_match(x, term_patterns))
+        mask = matched_terms.apply(len) > 0
+        matched_df = comments.loc[mask].copy()
+
+
+
+        matched_df.insert(0, "matched_terms", matched_terms.loc[matched_df.index].apply(lambda lst: "; ".join(lst)))
+        matched_df.insert(0, "topic_id", topic_id)
+
+        out_path = os.path.join(OUTPUT_DIR, f"topic_{topic_id}_comments.csv")
+        matched_df.to_csv(out_path, index=False)
+        print(f"[Topic {topic_id}] Key words count={len(terms):>2}，Hit Comment={len(matched_df):>5}（After removing duplicates） → {out_path}")
+
+        summary_rows.append({
+            "topic_id": topic_id,
+            "n_terms": len(terms),
+            "n_matched_comments": len(matched_df),
+            "output_file": out_path
+        })
+
+    pd.DataFrame(summary_rows).to_csv(os.path.join(OUTPUT_DIR, "summary1.csv"), index=False)
+    print(f"完成。汇总表已保存到 {os.path.join(OUTPUT_DIR, 'summary1.csv')}")
+
+if __name__ == "__main__":
+    main()
