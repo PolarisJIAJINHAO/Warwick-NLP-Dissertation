@@ -1,0 +1,86 @@
+import pandas as pd
+from scipy.stats import mannwhitneyu
+
+#here, input the necessary information.
+CSV_PATH = 'reddit_sentiment_score.csv'
+DATE_COL = 'comment_time'
+SCORE_COL = 'sentiment_score'
+EVENT_DATE = '2024/11/1'
+
+PER_GROUP_BEFORE = 82  # Number Before Event
+PER_GROUP_AFTER  = 72  # Number After Event
+
+
+
+df = pd.read_csv(
+    CSV_PATH,
+    encoding='cp1252',
+    engine='python',
+    on_bad_lines='warn',
+    encoding_errors='replace',
+    parse_dates=[DATE_COL]
+)
+
+
+df[SCORE_COL] = pd.to_numeric(df[SCORE_COL], errors='coerce')
+df = df.dropna(subset=[SCORE_COL, DATE_COL])
+
+
+event_date = pd.Timestamp(EVENT_DATE)
+
+
+df_before_all = df[df[DATE_COL] < event_date]
+df_after_all  = df[df[DATE_COL] >= event_date]
+
+
+
+df_before = (
+    df_before_all
+    .sort_values(DATE_COL, ascending=False)
+    .head(PER_GROUP_BEFORE)
+)
+
+df_after = (
+    df_after_all
+    .sort_values(DATE_COL, ascending=True)
+    .head(PER_GROUP_AFTER)
+)
+
+
+scores_before = df_before[SCORE_COL].to_numpy()
+scores_after  = df_after[SCORE_COL].to_numpy()
+
+n1 = len(scores_before)
+n2 = len(scores_after)
+print(f"n_before={n1}, n_after={n2}")
+
+
+# two-sided 返回的是 U_min；one-sided 指定 after>before
+two = mannwhitneyu(scores_before, scores_after, alternative='two-sided')
+great = mannwhitneyu(scores_after,  scores_before, alternative='greater')
+
+U_min   = two.statistic
+p_two   = two.pvalue
+U_after = great.statistic
+p_great = great.pvalue
+
+print(f"U_min (two-sided)  = {U_min:.2f},  p_two-sided = {p_two:.3e}")
+print(f"U_after (greater)  = {U_after:.2f}, p_one-sided (after>before) = {p_great:.3e}")
+
+
+med_before = float(pd.Series(scores_before).median())
+med_after  = float(pd.Series(scores_after).median())
+med_diff   = med_after - med_before
+print(f"Median(before) = {med_before:.4f}")
+print(f"Median(after)  = {med_after:.4f}")
+print(f"Median(after) – Median(before) = {med_diff:.4f}")
+
+
+auc  = U_after / (n1 * n2)
+r_rb = 2 * auc - 1
+print(f"AUC (P(after > before) + 0.5*P(=)) = {auc:.4f}")
+print(f"Rank-biserial correlation          = {r_rb:.4f}")
+
+# This step use to check the direction of median difference and Rank-biserial correlation. 
+if (med_diff > 0 and auc < 0.5) or (med_diff < 0 and auc > 0.5):
+    print("⚠️ The median difference is not in the same direction as the AUC. Please check the direction of U or the order of groups.")
