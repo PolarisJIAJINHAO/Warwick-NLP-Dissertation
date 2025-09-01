@@ -1,0 +1,165 @@
+import praw
+import prawcore
+import time
+import logging
+import csv
+from praw.exceptions import DuplicateReplaceException
+from praw.models import Comment, MoreComments
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s",
+    force=True
+)
+
+CLIENT_ID             = "XbvfN1vLbTOTQ3AsbgHPzQ"
+CLIENT_SECRET         = "5_LBwSwDcWY9eGIUlpciWxWQq5RlfA"
+USER_AGENT            = "python:com.University_of_Warwick.loldata:v1.0 (by /u/Tough_Base4547)"
+SUBREDDIT_NAME        = "leagueoflegends"
+SEARCH_LIMIT          = 100      
+RATE_THRESHOLD        = 5        
+MAX_COMMENTS_PER_TERM = 2000     
+TOP_COMMENTS_PER_POST = 20       
+OUTPUT_FILE           = "search_comments_3.csv"
+PARTIAL_FILE          = "search_comments_partial.csv"  
+
+keywords = [
+    "prices", "esport"
+]
+
+
+reddit = praw.Reddit(
+    client_id=CLIENT_ID,
+    client_secret=CLIENT_SECRET,
+    user_agent=USER_AGENT
+)
+logging.info("✅ Reddit login")
+subreddit = reddit.subreddit(SUBREDDIT_NAME)
+logging.info(f"✅ located successfully: r/{SUBREDDIT_NAME}")
+
+
+def backoff_sleep(exc: prawcore.exceptions.TooManyRequests):
+    retry_after = exc.response.headers.get("Retry-After", "")
+    wait = int(retry_after) if retry_after.isdigit() else 60
+    logging.warning(f"429，sleep {wait}s …")
+    time.sleep(wait)
+
+
+def safe_replace_more(comments):
+    while True:
+        try:
+            comments.replace_more(limit=None)
+            return
+        except DuplicateReplaceException:
+            return
+        except prawcore.exceptions.TooManyRequests as e:
+            backoff_sleep(e)
+
+
+def safe_search(subreddit, term, **kwargs):
+    while True:
+        try:
+            return subreddit.search(term, **kwargs)
+        except prawcore.exceptions.TooManyRequests as e:
+            backoff_sleep(e)
+
+
+def throttle_if_needed():
+    limits    = reddit.auth.limits or {}
+    remaining = limits.get("remaining", 0)
+    reset_ts  = limits.get("reset_timestamp", time.time() + 60)
+    if remaining < RATE_THRESHOLD:
+        wait = max(int(reset_ts - time.time()) + 5, 0)
+        logging.warning(f"The remaining rate quota is low. (remaining={remaining}) sleep {wait}s")
+        time.sleep(wait)
+
+
+def save_rows(path, rows):
+    if not rows:
+        return
+    fieldnames = [
+        "keyword",
+        "post_title",
+        "post_comment_count",
+        "comment",
+        "comment_time",
+        "upvotes"
+    ]
+    with open(path, "w", newline="", encoding="utf-8-sig") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    logging.info(f"{len(rows)} comment save as {path}")
+
+# —— 主流程 ——
+rows = []
+seen_submissions = set()
+
+try:
+    for term in keywords:
+        term_count = 0
+        logging.info(f"▶ search keyword: '{term}'")
+
+        for submission in safe_search(subreddit, term, limit=SEARCH_LIMIT):
+            if term_count >= MAX_COMMENTS_PER_TERM:
+                logging.info(f"⚡ keyword '{term}' Reach the limitation {term_count} ")
+                break
+
+            if submission.id in seen_submissions:
+                continue
+            seen_submissions.add(submission.id)
+
+            title = submission.title
+            total_comments = submission.num_comments
+
+            throttle_if_needed()
+            safe_replace_more(submission.comments)
+
+
+            valid_comments = [
+                c for c in submission.comments.list()
+                if isinstance(c, Comment)
+                   and c.body
+                   and c.body.strip().lower() != "[deleted]"
+            ]
+
+            top_comments = sorted(
+                valid_comments,
+                key=lambda c: c.score or 0,
+                reverse=True
+            )[:TOP_COMMENTS_PER_POST]
+
+            for comment in top_comments:
+                if term_count >= MAX_COMMENTS_PER_TERM:
+                    break
+
+                body = comment.body.strip()
+                if term.lower() in body.lower():
+                    print(f"keyword '{term}' matched. Title is: {title}")
+
+                rows.append({
+                    "keyword":            term,
+                    "post_title":         title,
+                    "post_comment_count": total_comments,
+                    "comment":            body,
+                    "comment_time":       time.strftime(
+                        '%Y-%m-%d %H:%M:%S',
+                        time.gmtime(comment.created_utc)
+                    ),
+                    "upvotes":            comment.score
+                })
+                term_count += 1
+
+            logging.info(f"Already processed '{title[:30]}…' {term_count} comments")
+
+        logging.info(f"✅ keywords '{term}' finish, totally {term_count} comments")
+
+    # 正常结束，写最终结果
+    save_rows(OUTPUT_FILE, rows)
+    logging.info(f"🎉 Finish! There are {len(rows)} comments, save as {OUTPUT_FILE}")
+
+except Exception:
+    logging.exception("An uncaught exception occurred. The collected data is being saved to a temporary file.")
+    save_rows(PARTIAL_FILE, rows)
+    raise
