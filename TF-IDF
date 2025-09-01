@@ -1,0 +1,29 @@
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+
+df = pd.read_csv("comments.csv", encoding="utf-8-sig")
+
+
+vectorizer = TfidfVectorizer(
+    max_df=0.95,    
+    min_df=2,       
+    stop_words='english'
+)
+
+tfidf_matrix = vectorizer.fit_transform(df["comment"])
+
+
+tfidf_df = pd.DataFrame(
+    tfidf_matrix.toarray(),
+    columns=vectorizer.get_feature_names_out()
+)
+
+# If you want to maintain the original correspondence between comments, you can incorporate the other columns of the original table:
+tfidf_df.insert(0, "comment_time", df["comment_time"])
+
+
+
+tfidf_df.to_csv("tfidf_results.csv", index=False, encoding="utf-8-sig")
+
+print(f"TF-IDF save in tfidf_results.csv, Matrix Size:{tfidf_df.shape[0]} row x {tfidf_df.shape[1]} column")
