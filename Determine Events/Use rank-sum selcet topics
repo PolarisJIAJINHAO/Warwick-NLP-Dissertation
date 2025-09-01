@@ -1,0 +1,28 @@
+import pandas as pd
+
+df_coh = pd.read_csv('bertopic_topic_coherence.csv')  
+df_info = pd.read_csv('topic_info.csv')               
+
+
+df = pd.merge(df_coh, df_info, left_on='topic_id', right_on='Topic')
+
+
+df['rank_coh'] = df['coherence_c_v'].rank(ascending=False)  
+df['rank_count'] = df['Count'].rank(ascending=False)
+
+
+df['rank_sum'] = df['rank_coh'] + df['rank_count']
+
+
+df_sorted = df.sort_values('rank_sum')
+
+
+df_top30 = df_sorted.head(30)
+
+print(df_top30[['topic_id', 'topic_name', 'coherence_c_v', 'Count', 'rank_sum']])
+
+
+df_sorted.to_csv('topic_rank_results.csv', index=False, encoding='utf-8-sig')
+df_top30.to_csv('topic_rank_top30.csv', index=False, encoding='utf-8-sig')
+
+print("result save as：topic_rank_results.csv and topic_rank_top30.csv")
